@@ -1,36 +1,84 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CV Optimizer
+
+AI-powered resume optimization with tracked PDF edits. Upload your CV and a job description to get GPT-4 powered suggestions, then map each change to specific locations in your PDF and export an edited version with visible tracked changes.
+
+## Features
+
+- **PDF Upload & Text Extraction**: Supports text-based PDFs with OCR.Space fallback for scanned documents
+- **AI-Powered Suggestions**: Uses GPT-4 to analyze your resume against job descriptions
+- **Interactive PDF Mapping**: Click on text or draw rectangles to map suggestions to exact PDF locations
+- **Tracked Edits**: Exported PDFs show visual tracked changes (highlights, strikethroughs, new text)
+- **Change Log Export**: Download a JSON audit trail of all applied edits
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+ or Bun
+- OpenAI API key
+- (Optional) OCR.Space API key for scanned PDF support
+
+### Environment Setup
+
+Create a `.env.local` file in the project root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# Required
+OPENAI_API_KEY=your-openai-api-key-here
+
+# Optional: specify model (defaults to gpt-4o)
+OPENAI_MODEL=gpt-4o
+
+# Optional: for scanned/image PDF support
+# Get a free API key at: https://ocr.space/ocrapi/freekey
+OCR_SPACE_API_KEY=your-ocr-space-api-key-here
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Installation
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+bun install
+# or
+npm install
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Development
 
-## Learn More
+```bash
+bun dev
+# or
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open [http://localhost:3000](http://localhost:3000) with your browser.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Usage
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. **Upload**: Drop your CV (PDF, max 10MB) and paste the job description
+2. **Review Suggestions**: Accept or reject AI suggestions based on relevance and risk level
+3. **Map to PDF**: For accepted suggestions, click "Map to PDF" then either:
+   - Click on text in the PDF viewer (for text-based PDFs)
+   - Draw a rectangle around the target area (for scanned PDFs)
+4. **Export**: Generate and download your optimized PDF with tracked edits, plus a JSON change log
+
+## Technical Stack
+
+- **Framework**: Next.js 16 (App Router)
+- **UI**: ShadCN components with Base UI
+- **PDF Viewing**: react-pdf (PDF.js)
+- **PDF Editing**: pdf-lib
+- **Text Extraction**: pdf-parse + OCR.Space API
+- **AI**: OpenAI GPT-4
+
+## Limitations
+
+- PDF size limit: 10MB
+- Page limit: 5-10 pages recommended
+- No layout reflow: edits are overlaid within bounding boxes
+- Mixed/scanned PDFs require manual rectangle mapping for accuracy
 
 ## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The easiest way to deploy is using the [Vercel Platform](https://vercel.com/new).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Check out the [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
