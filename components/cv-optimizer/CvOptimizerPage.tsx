@@ -21,26 +21,204 @@ function normalizeText(text: string): string {
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/\u2013/g, "-") // En-dash
     .replace(/\u2014/g, "-") // Em-dash
+    .replace(/&amp;/g, "&") // HTML entities
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
     .trim();
 }
 
-// Find and replace text with fuzzy matching
-function replaceTextFuzzy(html: string, originalText: string, newText: string): string {
-  // Normalize the search text
-  const normalizedSearch = normalizeText(originalText);
+// Strip HTML tags from text for plain text matching
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, " ") // Replace <br> with space
+    .replace(/<[^>]+>/g, "") // Remove all HTML tags
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  // Create a regex that's flexible with whitespace
+// Create a flexible regex that handles HTML tags and whitespace
+function createFlexibleHtmlRegex(text: string): RegExp | null {
+  try {
+    const normalized = normalizeText(text);
+    // Split into words and allow HTML tags/whitespace between them
+    const words = normalized.split(/\s+/).filter(w => w.length > 0);
+    if (words.length === 0) return null;
+
+    // Escape each word and join with pattern that allows whitespace, <br> tags, or HTML entities
+    const pattern = words
+      .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("(?:\\s*(?:<br\\s*/?>)?\\s*|\\s+)"); // Allow whitespace, <br>, or just whitespace between words
+
+    return new RegExp(pattern, "gi");
+  } catch {
+    return null;
+  }
+}
+
+// Find text position in HTML by matching against plain text content
+function findTextInHtml(html: string, searchText: string): { start: number; end: number; match: string } | null {
+  const normalizedSearch = normalizeText(searchText);
+  const plainText = stripHtmlTags(html);
+  const normalizedPlain = normalizeText(plainText);
+
+  // Find in plain text
+  const plainIndex = normalizedPlain.toLowerCase().indexOf(normalizedSearch.toLowerCase());
+  if (plainIndex === -1) return null;
+
+  // Now we need to find the corresponding position in the original HTML
+  // Walk through HTML and track plain text position
+  let htmlPos = 0;
+  let plainPos = 0;
+  let inTag = false;
+  let startHtmlPos = -1;
+  let endHtmlPos = -1;
+
+  const normalizedHtml = html
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'");
+
+  // Build a map from plain text position to HTML position
+  const plainToHtml: number[] = [];
+  for (let i = 0; i < normalizedHtml.length; i++) {
+    const char = normalizedHtml[i];
+
+    if (char === '<') {
+      inTag = true;
+      // Check if it's a <br> tag - treat as whitespace
+      const brMatch = normalizedHtml.slice(i).match(/^<br\s*\/?>/i);
+      if (brMatch) {
+        plainToHtml.push(i);
+        plainPos++;
+      }
+      continue;
+    }
+    if (char === '>') {
+      inTag = false;
+      continue;
+    }
+    if (!inTag) {
+      plainToHtml.push(i);
+      plainPos++;
+    }
+  }
+
+  // Find the match boundaries
+  // We need to search for the text allowing flexible whitespace
+  const searchWords = normalizedSearch.toLowerCase().split(/\s+/);
+  let searchIdx = 0;
+  let matchStartPlain = -1;
+  let matchEndPlain = -1;
+  let currentWordIdx = 0;
+  let currentWord = searchWords[0];
+  let wordMatchStart = -1;
+
+  const plainChars = Array.from(normalizedPlain.toLowerCase());
+
+  for (let i = 0; i < plainChars.length && currentWordIdx < searchWords.length; i++) {
+    const char = plainChars[i];
+
+    if (/\s/.test(char)) {
+      // Whitespace - if we were matching a word, check if complete
+      if (wordMatchStart !== -1 && searchIdx === currentWord.length) {
+        // Word complete
+        if (matchStartPlain === -1) matchStartPlain = wordMatchStart;
+        currentWordIdx++;
+        if (currentWordIdx < searchWords.length) {
+          currentWord = searchWords[currentWordIdx];
+          searchIdx = 0;
+          wordMatchStart = -1;
+        } else {
+          matchEndPlain = i;
+          break;
+        }
+      } else if (wordMatchStart !== -1) {
+        // Partial match, reset
+        currentWordIdx = 0;
+        currentWord = searchWords[0];
+        searchIdx = 0;
+        wordMatchStart = -1;
+        matchStartPlain = -1;
+      }
+    } else if (char === currentWord[searchIdx]) {
+      if (wordMatchStart === -1) wordMatchStart = i;
+      searchIdx++;
+      if (searchIdx === currentWord.length) {
+        // Check if this is the last word
+        if (currentWordIdx === searchWords.length - 1) {
+          if (matchStartPlain === -1) matchStartPlain = wordMatchStart;
+          matchEndPlain = i + 1;
+          break;
+        }
+        // Otherwise wait for whitespace to confirm word boundary
+      }
+    } else {
+      // Mismatch, reset
+      currentWordIdx = 0;
+      currentWord = searchWords[0];
+      searchIdx = 0;
+      wordMatchStart = -1;
+      matchStartPlain = -1;
+    }
+  }
+
+  if (matchStartPlain === -1 || matchEndPlain === -1) return null;
+  if (matchStartPlain >= plainToHtml.length || matchEndPlain > plainToHtml.length) return null;
+
+  startHtmlPos = plainToHtml[matchStartPlain];
+  endHtmlPos = matchEndPlain < plainToHtml.length ? plainToHtml[matchEndPlain] : html.length;
+
+  // Expand to include any HTML tags that are part of this text block
+  // Find the actual text span in original HTML
+  return {
+    start: startHtmlPos,
+    end: endHtmlPos,
+    match: html.slice(startHtmlPos, endHtmlPos)
+  };
+}
+
+// Find and replace text with fuzzy matching that handles HTML
+function replaceTextFuzzy(html: string, originalText: string, newText: string): string {
+  // Method 1: Try flexible HTML regex first
+  const regex = createFlexibleHtmlRegex(originalText);
+  if (regex && regex.test(html)) {
+    regex.lastIndex = 0;
+    return html.replace(regex, newText);
+  }
+
+  // Method 2: Try finding in plain text and replacing
+  const found = findTextInHtml(html, originalText);
+  if (found) {
+    return html.slice(0, found.start) + newText + html.slice(found.end);
+  }
+
+  // Method 3: Simple normalized replacement
+  const normalizedSearch = normalizeText(originalText);
   const escapedSearch = normalizedSearch
     .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/ /g, "\\s+"); // Allow any whitespace between words
+    .replace(/ /g, "\\s+");
 
   try {
-    const regex = new RegExp(escapedSearch, "gi");
-    return html.replace(regex, newText);
+    const simpleRegex = new RegExp(escapedSearch, "gi");
+    if (simpleRegex.test(html)) {
+      simpleRegex.lastIndex = 0;
+      return html.replace(simpleRegex, newText);
+    }
   } catch {
-    // Fallback to simple replace if regex fails
-    return html.replace(originalText, newText);
+    // Ignore regex errors
   }
+
+  // Method 4: Fallback to direct replace
+  return html.replace(originalText, newText);
 }
 
 export function CvOptimizerPage() {
@@ -293,6 +471,7 @@ export function CvOptimizerPage() {
                 onApplySuggestion={handleApplySuggestion}
                 onScrollToSuggestion={handleScrollToSuggestion}
                 extractedText={extractedText}
+                htmlContent={htmlContent}
               />
 
               <div className="flex gap-2">
@@ -328,6 +507,7 @@ export function CvOptimizerPage() {
           <div className="mx-auto max-w-2xl">
             <ExportPanel
               pdfBytes={pdfBytes}
+              htmlContent={htmlContent}
               suggestions={suggestions}
               onBack={handleBackToEditing}
               onStartOver={handleStartOver}

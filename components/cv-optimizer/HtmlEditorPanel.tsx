@@ -21,7 +21,7 @@ interface HtmlEditorPanelProps {
   extractedText?: string;
 }
 
-// Normalize text for matching
+// Normalize text for matching - handles whitespace and common variations
 function normalizeText(text: string): string {
   return text
     .replace(/\s+/g, " ")
@@ -29,20 +29,58 @@ function normalizeText(text: string): string {
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/\u2013/g, "-")
     .replace(/\u2014/g, "-")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
     .trim();
 }
 
-// Create a flexible regex for matching text with whitespace variations
+// Strip HTML tags from text for plain text matching
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Create a flexible regex for matching text with whitespace and HTML variations
 function createFlexibleRegex(text: string): RegExp | null {
   try {
     const normalized = normalizeText(text);
-    const escaped = normalized
-      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-      .replace(/ /g, "[\\s\\n]+"); // Allow any whitespace including newlines
-    return new RegExp(`(${escaped})`, "gi");
+    const words = normalized.split(/\s+/).filter(w => w.length > 0);
+    if (words.length === 0) return null;
+
+    // Allow whitespace, <br> tags, or HTML entities between words
+    const pattern = words
+      .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("(?:\\s*(?:<br\\s*/?>)?\\s*|[\\s\\n]+)");
+
+    return new RegExp(`(${pattern})`, "gi");
   } catch {
     return null;
   }
+}
+
+// Check if text can be found in HTML using multiple methods
+function canFindTextInHtml(html: string, searchText: string): boolean {
+  // Method 1: Try regex
+  const regex = createFlexibleRegex(searchText);
+  if (regex && regex.test(html)) return true;
+
+  // Method 2: Try plain text comparison
+  const plainHtml = stripHtmlTags(html);
+  const normalizedHtml = normalizeText(plainHtml);
+  const normalizedSearch = normalizeText(searchText);
+
+  return normalizedHtml.toLowerCase().includes(normalizedSearch.toLowerCase());
 }
 
 export function HtmlEditorPanel({
@@ -189,8 +227,7 @@ export function HtmlEditorPanel({
     if (!html) return 0;
     return suggestions.filter((s) => {
       if (s.status !== "pending") return false;
-      const regex = createFlexibleRegex(s.originalSnippet);
-      return regex && regex.test(html);
+      return canFindTextInHtml(html, s.originalSnippet);
     }).length;
   }, [html, suggestions]);
 

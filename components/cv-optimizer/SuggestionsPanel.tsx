@@ -26,6 +26,64 @@ interface SuggestionsPanelProps {
   onUpdateStatus: (id: string, status: SuggestionStatus) => void;
   onApplySuggestion: (id: string) => void;
   onScrollToSuggestion: (id: string) => void;
+  extractedText?: string;
+  htmlContent?: string;
+}
+
+// Check if text can be found in HTML using multiple methods
+function canFindTextInHtml(html: string, searchText: string): boolean {
+  // Normalize text for matching
+  const normalizeText = (text: string): string => {
+    return text
+      .replace(/\s+/g, " ")
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/\u2013/g, "-")
+      .replace(/\u2014/g, "-")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'")
+      .trim();
+  };
+
+  // Strip HTML tags
+  const stripHtmlTags = (htmlStr: string): string => {
+    return htmlStr
+      .replace(/<br\s*\/?>/gi, " ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
+  // Try regex match
+  try {
+    const normalized = normalizeText(searchText);
+    const words = normalized.split(/\s+/).filter(w => w.length > 0);
+    if (words.length === 0) return false;
+
+    const pattern = words
+      .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("(?:\\s*(?:<br\\s*/?>)?\\s*|[\\s\\n]+)");
+
+    const regex = new RegExp(pattern, "gi");
+    if (regex.test(html)) return true;
+  } catch {
+    // Ignore regex errors
+  }
+
+  // Try plain text comparison
+  const plainHtml = stripHtmlTags(html);
+  const normalizedHtml = normalizeText(plainHtml);
+  const normalizedSearch = normalizeText(searchText);
+
+  return normalizedHtml.toLowerCase().includes(normalizedSearch.toLowerCase());
 }
 
 const riskColors: Record<string, string> = {
@@ -46,9 +104,22 @@ export function SuggestionsPanel({
   onUpdateStatus,
   onApplySuggestion,
   onScrollToSuggestion,
+  extractedText,
+  htmlContent,
 }: SuggestionsPanelProps) {
   const acceptedCount = suggestions.filter((s) => s.status === "accepted").length;
   const pendingCount = suggestions.filter((s) => s.status === "pending").length;
+
+  // Count how many pending suggestions can be found
+  const foundCount = React.useMemo(() => {
+    if (!htmlContent) return pendingCount;
+    return suggestions.filter((s) => {
+      if (s.status !== "pending") return false;
+      return canFindTextInHtml(htmlContent, s.originalSnippet);
+    }).length;
+  }, [htmlContent, suggestions, pendingCount]);
+
+  const notFoundCount = pendingCount - foundCount;
 
   return (
     <Card className="w-full">
@@ -61,6 +132,9 @@ export function SuggestionsPanel({
           Review each suggestion and apply the ones you want to include in your CV.
           <span className="mt-1 block text-xs">
             {pendingCount} pending · {acceptedCount} applied
+            {notFoundCount > 0 && (
+              <span className="text-yellow-600 dark:text-yellow-400"> · {notFoundCount} not found in document</span>
+            )}
           </span>
         </CardDescription>
       </CardHeader>
@@ -85,6 +159,7 @@ export function SuggestionsPanel({
                 onUpdateStatus={onUpdateStatus}
                 onApplySuggestion={onApplySuggestion}
                 onScrollToSuggestion={onScrollToSuggestion}
+                htmlContent={htmlContent}
               />
             ))}
           </div>
@@ -99,6 +174,7 @@ interface SuggestionCardProps {
   onUpdateStatus: (id: string, status: SuggestionStatus) => void;
   onApplySuggestion: (id: string) => void;
   onScrollToSuggestion: (id: string) => void;
+  htmlContent?: string;
 }
 
 function SuggestionCard({
@@ -106,6 +182,7 @@ function SuggestionCard({
   onUpdateStatus,
   onApplySuggestion,
   onScrollToSuggestion,
+  htmlContent,
 }: SuggestionCardProps) {
   const {
     id,
@@ -117,6 +194,12 @@ function SuggestionCard({
     status,
   } = suggestion;
 
+  // Check if this suggestion's text can be found in the HTML
+  const canBeApplied = React.useMemo(() => {
+    if (!htmlContent || status !== "pending") return true;
+    return canFindTextInHtml(htmlContent, originalSnippet);
+  }, [htmlContent, originalSnippet, status]);
+
   return (
     <div
       className={`rounded-lg border p-4 transition-all ${
@@ -124,6 +207,8 @@ function SuggestionCard({
           ? "border-green-300 bg-green-50/50 dark:border-green-800 dark:bg-green-950/30"
           : status === "rejected"
           ? "border-muted bg-muted/30 opacity-60"
+          : !canBeApplied
+          ? "border-yellow-300 bg-yellow-50/30 dark:border-yellow-800 dark:bg-yellow-950/20"
           : "border-border"
       }`}
     >
@@ -133,6 +218,11 @@ function SuggestionCard({
         </Badge>
         <Badge className={riskColors[riskLevel]}>Risk: {riskLevel}</Badge>
         <Badge className={statusColors[status]}>{status}</Badge>
+        {!canBeApplied && status === "pending" && (
+          <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
+            Text not found
+          </Badge>
+        )}
       </div>
 
       <div className="mb-3 space-y-2">
@@ -155,6 +245,8 @@ function SuggestionCard({
               size="sm"
               onClick={() => onApplySuggestion(id)}
               variant="default"
+              disabled={!canBeApplied}
+              title={!canBeApplied ? "This text could not be found in the document" : undefined}
             >
               <HugeiconsIcon icon={Tick01Icon} strokeWidth={2} />
               Apply
@@ -163,6 +255,7 @@ function SuggestionCard({
               size="sm"
               variant="outline"
               onClick={() => onScrollToSuggestion(id)}
+              disabled={!canBeApplied}
             >
               <HugeiconsIcon icon={ViewIcon} strokeWidth={2} />
               View in CV
@@ -176,6 +269,11 @@ function SuggestionCard({
               Reject
             </Button>
           </>
+        )}
+        {status === "pending" && !canBeApplied && (
+          <p className="text-muted-foreground w-full text-xs">
+            The original text could not be matched in the document. This may happen if the text spans multiple lines or contains special formatting.
+          </p>
         )}
         {status === "accepted" && (
           <div className="text-muted-foreground flex items-center gap-2 text-sm">

@@ -20,7 +20,28 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { Suggestion } from "@/lib/types";
 
+// Helper to convert base64 to Blob
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const byteCharacters = atob(base64);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  return new Blob([byteArray], { type: mimeType });
+}
+
+// Helper to convert Uint8Array to base64
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 interface ExportPanelProps {
+  pdfBytes: Uint8Array;
   htmlContent: string;
   suggestions: Suggestion[];
   onBack: () => void;
@@ -28,6 +49,7 @@ interface ExportPanelProps {
 }
 
 export function ExportPanel({
+  pdfBytes,
   htmlContent,
   suggestions,
   onBack,
@@ -36,31 +58,76 @@ export function ExportPanel({
   const [isExporting, setIsExporting] = React.useState(false);
   const [exportedPdfUrl, setExportedPdfUrl] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [exportMethod, setExportMethod] = React.useState<"edited" | "original">("edited");
 
   const acceptedSuggestions = suggestions.filter((s) => s.status === "accepted");
   const rejectedSuggestions = suggestions.filter((s) => s.status === "rejected");
   const pendingSuggestions = suggestions.filter((s) => s.status === "pending");
 
-  const handleExport = async () => {
+  const handleExportEdited = async () => {
     setIsExporting(true);
     setError(null);
 
     try {
+      // Prepare replacements
+      const replacements = acceptedSuggestions.map((s) => ({
+        originalText: s.originalSnippet,
+        newText: s.proposedText,
+      }));
+
+      // Try Nutrient SDK first (preserves original PDF format)
+      console.log("Attempting PDF edit with Nutrient SDK...");
+      const nutrientRes = await fetch("/api/edit-pdf-nutrient", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pdfBase64: uint8ArrayToBase64(pdfBytes),
+          replacements,
+        }),
+      });
+
+      if (nutrientRes.ok) {
+        const nutrientData = await nutrientRes.json();
+        if (nutrientData.success && nutrientData.replacementsMade > 0) {
+          // Successfully edited the original PDF with format preserved!
+          console.log(`Nutrient: Applied ${nutrientData.replacementsMade} replacements`);
+          const pdfBlob = base64ToBlob(nutrientData.pdfBase64, "application/pdf");
+          const url = URL.createObjectURL(pdfBlob);
+          setExportedPdfUrl(url);
+          return;
+        } else if (nutrientData.pdfBase64) {
+          // Nutrient processed but couldn't match text - still return the PDF
+          console.log("Nutrient: No text matches found, returning original PDF");
+          const pdfBlob = base64ToBlob(nutrientData.pdfBase64, "application/pdf");
+          const url = URL.createObjectURL(pdfBlob);
+          setExportedPdfUrl(url);
+          setError("Some changes could not be applied automatically. The exported PDF may not include all edits.");
+          return;
+        }
+      } else {
+        const nutrientError = await nutrientRes.json().catch(() => ({}));
+        console.log("Nutrient API response status:", nutrientRes.status);
+        console.log("Nutrient API error:", JSON.stringify(nutrientError, null, 2));
+
+        if (nutrientError.licenseRequired) {
+          console.log("Nutrient license/feature required, falling back to HTML export");
+          console.log("Details:", nutrientError.details);
+        } else {
+          console.log("Nutrient error:", nutrientError.error);
+          console.log("Nutrient error details:", nutrientError.details);
+        }
+      }
+
+      // Fallback: Generate from HTML (doesn't preserve original format)
+      console.log("Falling back to HTML-to-PDF generation");
       const res = await fetch("/api/html-to-pdf", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           html: htmlContent,
           options: {
-            format: "A4",
-            margin: {
-              top: "0",
-              right: "0",
-              bottom: "0",
-              left: "0",
-            },
+            format: "Letter",
+            margin: { top: "0", right: "0", bottom: "0", left: "0" },
           },
         }),
       });
@@ -73,11 +140,30 @@ export function ExportPanel({
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       setExportedPdfUrl(url);
+
+      // Warn user that format wasn't preserved
+      setError("Note: Original PDF format could not be preserved. The exported PDF uses a simplified layout. To preserve the original format, add a Nutrient license key.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed");
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const handleDownloadOriginal = () => {
+    // Create a new ArrayBuffer from the Uint8Array to avoid TypeScript issues
+    const arrayBuffer = new ArrayBuffer(pdfBytes.length);
+    const view = new Uint8Array(arrayBuffer);
+    view.set(pdfBytes);
+    const blob = new Blob([arrayBuffer], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `original-resume-${Date.now()}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleDownloadPdf = () => {
@@ -218,24 +304,29 @@ export function ExportPanel({
         {/* Actions */}
         <div className="space-y-4">
           {!exportedPdfUrl ? (
-            <Button
-              onClick={handleExport}
-              disabled={isExporting}
-              className="w-full"
-              size="lg"
-            >
-              {isExporting ? (
-                <>
-                  <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                  Generating PDF...
-                </>
-              ) : (
-                <>
-                  <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />
-                  Generate PDF
-                </>
-              )}
-            </Button>
+            <div className="space-y-3">
+              <Button
+                onClick={handleExportEdited}
+                disabled={isExporting}
+                className="w-full"
+                size="lg"
+              >
+                {isExporting ? (
+                  <>
+                    <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    Generating PDF...
+                  </>
+                ) : (
+                  <>
+                    <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />
+                    Generate Edited PDF
+                  </>
+                )}
+              </Button>
+              <p className="text-muted-foreground text-center text-xs">
+                Generates a PDF with your accepted changes applied
+              </p>
+            </div>
           ) : (
             <div className="space-y-3">
               <div className="bg-green-100 dark:bg-green-900/30 flex items-center gap-3 rounded-lg p-4">
@@ -258,7 +349,7 @@ export function ExportPanel({
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button onClick={handleDownloadPdf} size="lg">
                   <HugeiconsIcon icon={DownloadIcon} strokeWidth={2} />
-                  Download PDF
+                  Download Edited PDF
                 </Button>
                 <Button
                   onClick={handleDownloadChangeLog}
@@ -272,14 +363,21 @@ export function ExportPanel({
             </div>
           )}
 
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onBack}>
-              <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
-              Back to Editing
-            </Button>
-            <Button variant="ghost" onClick={onStartOver}>
-              Start Over
-            </Button>
+          <div className="border-t pt-4">
+            <p className="text-muted-foreground mb-2 text-xs">Other options:</p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={handleDownloadOriginal}>
+                <HugeiconsIcon icon={DownloadIcon} strokeWidth={2} />
+                Download Original PDF
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onBack}>
+                <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
+                Back to Editing
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onStartOver}>
+                Start Over
+              </Button>
+            </div>
           </div>
         </div>
       </CardContent>
