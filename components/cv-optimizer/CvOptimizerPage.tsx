@@ -3,30 +3,63 @@
 import * as React from "react";
 import { UploadPanel } from "./UploadPanel";
 import { SuggestionsPanel } from "./SuggestionsPanel";
-import { PdfReviewPanel } from "./PdfReviewPanel";
+import { HtmlEditorPanel } from "./HtmlEditorPanel";
 import { ExportPanel } from "./ExportPanel";
 import type {
   Suggestion,
   SuggestionStatus,
-  AppliedEdit,
   OptimizeResponse,
+  AppStep,
+  HtmlConversionResult,
 } from "@/lib/types";
 
-type AppStep = "upload" | "review" | "export";
+// Normalize text for matching - handles whitespace and common variations
+function normalizeText(text: string): string {
+  return text
+    .replace(/\s+/g, " ") // Normalize whitespace
+    .replace(/[\u2018\u2019]/g, "'") // Smart quotes to regular
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\u2013/g, "-") // En-dash
+    .replace(/\u2014/g, "-") // Em-dash
+    .trim();
+}
+
+// Find and replace text with fuzzy matching
+function replaceTextFuzzy(html: string, originalText: string, newText: string): string {
+  // Normalize the search text
+  const normalizedSearch = normalizeText(originalText);
+
+  // Create a regex that's flexible with whitespace
+  const escapedSearch = normalizedSearch
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/ /g, "\\s+"); // Allow any whitespace between words
+
+  try {
+    const regex = new RegExp(escapedSearch, "gi");
+    return html.replace(regex, newText);
+  } catch {
+    // Fallback to simple replace if regex fails
+    return html.replace(originalText, newText);
+  }
+}
 
 export function CvOptimizerPage() {
   const [step, setStep] = React.useState<AppStep>("upload");
   const [isLoading, setIsLoading] = React.useState(false);
+  const [loadingMessage, setLoadingMessage] = React.useState<string>("");
   const [error, setError] = React.useState<string | null>(null);
 
   // Data state
   const [pdfFile, setPdfFile] = React.useState<File | null>(null);
-  const [pdfBytes, setPdfBytes] = React.useState<Uint8Array | null>(null);
+  const [pdfBytes, setPdfBytes] = React.useState<Uint8Array | null>(null); // Store original PDF for export
   const [jobDescription, setJobDescription] = React.useState("");
   const [suggestions, setSuggestions] = React.useState<Suggestion[]>([]);
-  const [appliedEdits, setAppliedEdits] = React.useState<AppliedEdit[]>([]);
-  const [activeMappingSuggestion, setActiveMappingSuggestion] =
-    React.useState<Suggestion | null>(null);
+  const [extractedText, setExtractedText] = React.useState<string>(""); // Store extracted text for matching
+
+  // HTML state for viewing/editing
+  const [htmlContent, setHtmlContent] = React.useState<string>("");
+  const [originalHtmlContent, setOriginalHtmlContent] = React.useState<string>("");
+  const [htmlMetadata, setHtmlMetadata] = React.useState<HtmlConversionResult["metadata"] | null>(null);
 
   const handleUploadSubmit = async (file: File, jd: string) => {
     setIsLoading(true);
@@ -34,42 +67,62 @@ export function CvOptimizerPage() {
     setPdfFile(file);
     setJobDescription(jd);
 
-    // Read file bytes for PDF viewer
-    // Convert to Uint8Array immediately to avoid detached ArrayBuffer issues
+    // Store original PDF bytes for later export
     const arrayBuffer = await file.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
-    setPdfBytes(uint8Array);
+    setPdfBytes(new Uint8Array(arrayBuffer));
 
     try {
-      const formData = new FormData();
-      formData.append("resumePdf", file);
-      formData.append("jobDescription", jd);
+      // Step 1: Convert PDF to HTML for viewing
+      setStep("converting");
+      setLoadingMessage("Converting PDF to HTML...");
 
-      console.log("Sending request to /api/optimize...");
-      const res = await fetch("/api/optimize", {
+      const pdfFormData = new FormData();
+      pdfFormData.append("resumePdf", file);
+
+      const htmlRes = await fetch("/api/pdf-to-html", {
         method: "POST",
-        body: formData,
+        body: pdfFormData,
       });
 
-      console.log("Response status:", res.status);
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        console.error("API error response:", errData);
-        throw new Error(errData.error || `Request failed: ${res.status}`);
+      if (!htmlRes.ok) {
+        const errData = await htmlRes.json().catch(() => ({}));
+        throw new Error(errData.error || `PDF conversion failed: ${htmlRes.status}`);
       }
 
-      const data: OptimizeResponse = await res.json();
-      console.log("Received response data:", data);
-      console.log("Suggestions count:", data.suggestions?.length || 0);
-      console.log("First suggestion:", data.suggestions?.[0]);
-      setSuggestions(data.suggestions || []);
-      setStep("review");
+      const htmlData: HtmlConversionResult = await htmlRes.json();
+      setHtmlContent(htmlData.html);
+      setOriginalHtmlContent(htmlData.html);
+      setHtmlMetadata(htmlData.metadata);
+      setExtractedText(htmlData.extractedText); // Store for text matching
+
+      // Step 2: Generate AI suggestions
+      setLoadingMessage("Generating AI suggestions...");
+
+      const optimizeFormData = new FormData();
+      optimizeFormData.append("resumePdf", file);
+      optimizeFormData.append("jobDescription", jd);
+
+      const suggestRes = await fetch("/api/optimize", {
+        method: "POST",
+        body: optimizeFormData,
+      });
+
+      if (!suggestRes.ok) {
+        const errData = await suggestRes.json().catch(() => ({}));
+        throw new Error(errData.error || `Suggestion generation failed: ${suggestRes.status}`);
+      }
+
+      const suggestData: OptimizeResponse = await suggestRes.json();
+      setSuggestions(suggestData.suggestions || []);
+
+      setStep("editing");
     } catch (err) {
       console.error("Error in handleUploadSubmit:", err);
       setError(err instanceof Error ? err.message : "An error occurred");
+      setStep("upload");
     } finally {
       setIsLoading(false);
+      setLoadingMessage("");
     }
   };
 
@@ -80,54 +133,61 @@ export function CvOptimizerPage() {
     setSuggestions((prev) =>
       prev.map((s) => (s.id === id ? { ...s, status } : s))
     );
-
-    // If rejecting, remove any applied edit for this suggestion
-    if (status === "rejected") {
-      setAppliedEdits((prev) => prev.filter((e) => e.suggestionId !== id));
-    }
   };
 
-  const handleSelectForMapping = (suggestion: Suggestion) => {
-    setActiveMappingSuggestion(suggestion);
+  const handleHtmlChange = (newHtml: string) => {
+    setHtmlContent(newHtml);
   };
 
-  const handleMappingComplete = (edit: AppliedEdit) => {
-    // Update or add the edit
-    setAppliedEdits((prev) => {
-      const existing = prev.findIndex(
-        (e) => e.suggestionId === edit.suggestionId
-      );
-      if (existing >= 0) {
-        const updated = [...prev];
-        updated[existing] = edit;
-        return updated;
-      }
-      return [...prev, edit];
-    });
+  const handleSuggestionAccept = (id: string, customText?: string) => {
+    const suggestion = suggestions.find((s) => s.id === id);
+    if (!suggestion) return;
 
-    // Mark suggestion as mapped
+    // Apply the change to HTML using fuzzy matching
+    const replacement = customText || suggestion.proposedText;
+    const updatedHtml = replaceTextFuzzy(htmlContent, suggestion.originalSnippet, replacement);
+    setHtmlContent(updatedHtml);
+
+    // Mark as accepted and store what was applied
     setSuggestions((prev) =>
-      prev.map((s) =>
-        s.id === edit.suggestionId ? { ...s, status: "mapped" as const } : s
-      )
+      prev.map((s) => (s.id === id ? { ...s, status: "accepted" as const, appliedText: replacement } : s))
     );
-
-    setActiveMappingSuggestion(null);
   };
 
-  const handleCancelMapping = () => {
-    setActiveMappingSuggestion(null);
+  const handleSuggestionReject = (id: string) => {
+    setSuggestions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, status: "rejected" as const } : s))
+    );
   };
 
-  const mappedCount = suggestions.filter((s) => s.status === "mapped").length;
-  const canExport = mappedCount > 0;
+  const handleApplySuggestion = (id: string) => {
+    const suggestion = suggestions.find((s) => s.id === id);
+    if (!suggestion) return;
+
+    // Apply the change to HTML using fuzzy matching
+    const updatedHtml = replaceTextFuzzy(htmlContent, suggestion.originalSnippet, suggestion.proposedText);
+    setHtmlContent(updatedHtml);
+
+    // Mark as accepted
+    setSuggestions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, status: "accepted" as const } : s))
+    );
+  };
+
+  const handleScrollToSuggestion = (id: string) => {
+    // This would be handled by the HtmlEditorPanel
+    console.log("Scroll to suggestion:", id);
+  };
+
+  const acceptedCount = suggestions.filter((s) => s.status === "accepted").length;
+  const canExport = acceptedCount > 0 || htmlContent !== originalHtmlContent;
 
   const handleProceedToExport = () => {
     setStep("export");
   };
 
-  const handleBackToReview = () => {
-    setStep("review");
+  const handleBackToEditing = () => {
+    setStep("editing");
   };
 
   const handleStartOver = () => {
@@ -136,10 +196,23 @@ export function CvOptimizerPage() {
     setPdfBytes(null);
     setJobDescription("");
     setSuggestions([]);
-    setAppliedEdits([]);
-    setActiveMappingSuggestion(null);
+    setHtmlContent("");
+    setOriginalHtmlContent("");
+    setHtmlMetadata(null);
+    setExtractedText("");
     setError(null);
   };
+
+  const stepLabels: Record<AppStep, string> = {
+    upload: "Upload",
+    converting: "Converting",
+    editing: "Edit",
+    generating: "Generating",
+    export: "Export",
+  };
+
+  const stepOrder: AppStep[] = ["upload", "converting", "editing", "generating", "export"];
+  const displaySteps: AppStep[] = ["upload", "editing", "export"];
 
   return (
     <div className="bg-background min-h-screen w-full">
@@ -150,28 +223,28 @@ export function CvOptimizerPage() {
             CV Optimizer
           </h1>
           <p className="text-muted-foreground">
-            AI-powered resume optimization with tracked PDF edits
+            AI-powered resume optimization with inline editing
           </p>
 
           {/* Step indicator */}
           <div className="mt-6 flex items-center justify-center gap-2">
-            {(["upload", "review", "export"] as const).map((s, i) => (
+            {displaySteps.map((s, i) => (
               <React.Fragment key={s}>
                 <div
                   className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors ${
-                    step === s
+                    step === s || (s === "editing" && (step === "converting" || step === "generating"))
                       ? "bg-primary text-primary-foreground"
-                      : ["upload", "review", "export"].indexOf(step) > i
+                      : stepOrder.indexOf(step) > stepOrder.indexOf(s)
                         ? "bg-primary/20 text-primary"
                         : "bg-muted text-muted-foreground"
                   }`}
                 >
                   {i + 1}
                 </div>
-                {i < 2 && (
+                {i < displaySteps.length - 1 && (
                   <div
                     className={`h-0.5 w-8 ${
-                      ["upload", "review", "export"].indexOf(step) > i
+                      stepOrder.indexOf(step) > stepOrder.indexOf(s)
                         ? "bg-primary"
                         : "bg-muted"
                     }`}
@@ -181,9 +254,9 @@ export function CvOptimizerPage() {
             ))}
           </div>
           <div className="text-muted-foreground mt-2 flex justify-center gap-8 text-xs">
-            <span>Upload</span>
-            <span>Review</span>
-            <span>Export</span>
+            {displaySteps.map((s) => (
+              <span key={s}>{stepLabels[s]}</span>
+            ))}
           </div>
         </header>
 
@@ -194,6 +267,16 @@ export function CvOptimizerPage() {
           </div>
         )}
 
+        {/* Loading state for conversion */}
+        {(step === "converting" || step === "generating") && isLoading && (
+          <div className="mx-auto max-w-xl">
+            <div className="bg-card rounded-lg border p-8 text-center">
+              <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+              <p className="text-muted-foreground">{loadingMessage}</p>
+            </div>
+          </div>
+        )}
+
         {/* Main content */}
         {step === "upload" && (
           <div className="mx-auto max-w-2xl">
@@ -201,51 +284,52 @@ export function CvOptimizerPage() {
           </div>
         )}
 
-        {step === "review" && pdfBytes && (
+        {step === "editing" && htmlContent && (
           <div className="grid gap-6 lg:grid-cols-2">
             <div className="space-y-4">
               <SuggestionsPanel
                 suggestions={suggestions}
                 onUpdateStatus={handleUpdateSuggestionStatus}
-                onSelectForMapping={handleSelectForMapping}
-                activeMappingId={activeMappingSuggestion?.id ?? null}
+                onApplySuggestion={handleApplySuggestion}
+                onScrollToSuggestion={handleScrollToSuggestion}
+                extractedText={extractedText}
               />
 
-              {canExport && (
-                <div className="flex gap-2">
+              <div className="flex gap-2">
+                {canExport && (
                   <button
                     onClick={handleProceedToExport}
                     className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg px-4 py-2 font-medium transition-colors"
                   >
-                    Proceed to Export ({mappedCount} edits)
+                    Proceed to Export ({acceptedCount} changes)
                   </button>
-                  <button
-                    onClick={handleStartOver}
-                    className="text-muted-foreground hover:text-foreground rounded-lg px-4 py-2 transition-colors"
-                  >
-                    Start Over
-                  </button>
-                </div>
-              )}
+                )}
+                <button
+                  onClick={handleStartOver}
+                  className="text-muted-foreground hover:text-foreground rounded-lg px-4 py-2 transition-colors"
+                >
+                  Start Over
+                </button>
+              </div>
             </div>
 
-            <PdfReviewPanel
-              pdfBytes={pdfBytes}
-              activeSuggestion={activeMappingSuggestion}
-              appliedEdits={appliedEdits}
-              onMappingComplete={handleMappingComplete}
-              onCancelMapping={handleCancelMapping}
+            <HtmlEditorPanel
+              html={htmlContent}
+              suggestions={suggestions}
+              onHtmlChange={handleHtmlChange}
+              onSuggestionAccept={handleSuggestionAccept}
+              onSuggestionReject={handleSuggestionReject}
+              extractedText={extractedText}
             />
           </div>
         )}
 
-        {step === "export" && pdfFile && (
+        {step === "export" && pdfBytes && (
           <div className="mx-auto max-w-2xl">
             <ExportPanel
-              pdfFile={pdfFile}
-              appliedEdits={appliedEdits}
-              jobDescription={jobDescription}
-              onBack={handleBackToReview}
+              pdfBytes={pdfBytes}
+              suggestions={suggestions}
+              onBack={handleBackToEditing}
               onStartOver={handleStartOver}
             />
           </div>
@@ -254,4 +338,3 @@ export function CvOptimizerPage() {
     </div>
   );
 }
-

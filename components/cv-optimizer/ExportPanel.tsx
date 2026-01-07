@@ -16,21 +16,20 @@ import {
   RefreshIcon,
   File01Icon,
   FileExportIcon,
+  Tick01Icon,
 } from "@hugeicons/core-free-icons";
-import type { AppliedEdit, ChangeSet } from "@/lib/types";
+import type { Suggestion } from "@/lib/types";
 
 interface ExportPanelProps {
-  pdfFile: File;
-  appliedEdits: AppliedEdit[];
-  jobDescription: string;
+  htmlContent: string;
+  suggestions: Suggestion[];
   onBack: () => void;
   onStartOver: () => void;
 }
 
 export function ExportPanel({
-  pdfFile,
-  appliedEdits,
-  jobDescription,
+  htmlContent,
+  suggestions,
   onBack,
   onStartOver,
 }: ExportPanelProps) {
@@ -38,27 +37,32 @@ export function ExportPanel({
   const [exportedPdfUrl, setExportedPdfUrl] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
-  const changeSet: ChangeSet = React.useMemo(
-    () => ({
-      appliedEdits,
-      timestamp: new Date().toISOString(),
-      jobDescriptionPreview: jobDescription.slice(0, 200) + "...",
-    }),
-    [appliedEdits, jobDescription]
-  );
+  const acceptedSuggestions = suggestions.filter((s) => s.status === "accepted");
+  const rejectedSuggestions = suggestions.filter((s) => s.status === "rejected");
+  const pendingSuggestions = suggestions.filter((s) => s.status === "pending");
 
   const handleExport = async () => {
     setIsExporting(true);
     setError(null);
 
     try {
-      const formData = new FormData();
-      formData.append("resumePdf", pdfFile);
-      formData.append("changeSet", JSON.stringify(changeSet));
-
-      const res = await fetch("/api/apply-edits", {
+      const res = await fetch("/api/html-to-pdf", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          html: htmlContent,
+          options: {
+            format: "A4",
+            margin: {
+              top: "0",
+              right: "0",
+              bottom: "0",
+              left: "0",
+            },
+          },
+        }),
       });
 
       if (!res.ok) {
@@ -81,21 +85,43 @@ export function ExportPanel({
 
     const link = document.createElement("a");
     link.href = exportedPdfUrl;
-    link.download = `optimized-${pdfFile.name}`;
+    link.download = `optimized-resume-${Date.now()}.pdf`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const handleDownloadChangeSet = () => {
-    const blob = new Blob([JSON.stringify(changeSet, null, 2)], {
+  const handleDownloadChangeLog = () => {
+    const changeLog = {
+      timestamp: new Date().toISOString(),
+      appliedChanges: acceptedSuggestions.map((s) => ({
+        section: s.section,
+        original: s.originalSnippet,
+        replacement: s.proposedText,
+        reason: s.reason,
+      })),
+      rejectedChanges: rejectedSuggestions.map((s) => ({
+        section: s.section,
+        original: s.originalSnippet,
+        suggested: s.proposedText,
+        reason: s.reason,
+      })),
+      pendingChanges: pendingSuggestions.map((s) => ({
+        section: s.section,
+        original: s.originalSnippet,
+        suggested: s.proposedText,
+        reason: s.reason,
+      })),
+    };
+
+    const blob = new Blob([JSON.stringify(changeLog, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
 
     const link = document.createElement("a");
     link.href = url;
-    link.download = `changeset-${Date.now()}.json`;
+    link.download = `change-log-${Date.now()}.json`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -107,66 +133,80 @@ export function ExportPanel({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <HugeiconsIcon icon={FileExportIcon} strokeWidth={2} size={24} />
-          Export Edited PDF
+          Export Optimized CV
         </CardTitle>
         <CardDescription>
-          Generate your optimized PDF with tracked changes and download it
+          Generate your optimized CV as a PDF and download it
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         {/* Summary */}
         <div className="bg-muted/50 rounded-lg p-4">
-          <h3 className="mb-3 font-medium">Edit Summary</h3>
+          <h3 className="mb-3 font-medium">Changes Summary</h3>
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
-              <span className="text-muted-foreground">Total edits:</span>
-              <span className="font-medium">{appliedEdits.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Pages affected:</span>
-              <span className="font-medium">
-                {new Set(appliedEdits.map((e) => e.pageIndex)).size}
+              <span className="text-muted-foreground">Applied changes:</span>
+              <span className="font-medium text-green-600">
+                {acceptedSuggestions.length}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-muted-foreground">Original file:</span>
-              <span className="font-medium">{pdfFile.name}</span>
+              <span className="text-muted-foreground">Rejected:</span>
+              <span className="font-medium text-red-500">
+                {rejectedSuggestions.length}
+              </span>
             </div>
+            {pendingSuggestions.length > 0 && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Not reviewed:</span>
+                <span className="font-medium text-yellow-600">
+                  {pendingSuggestions.length}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Edits list */}
-        <div>
-          <h3 className="mb-3 font-medium">Changes to Apply</h3>
-          <div className="max-h-[300px] space-y-2 overflow-auto">
-            {appliedEdits.map((edit, idx) => (
-              <div
-                key={edit.suggestionId}
-                className="border-border rounded border p-3"
-              >
-                <div className="text-muted-foreground mb-1 text-xs">
-                  Edit #{idx + 1} · Page {edit.pageIndex + 1}
-                </div>
-                <div className="space-y-1 text-sm">
-                  <div className="flex gap-2">
-                    <span className="text-muted-foreground shrink-0">From:</span>
-                    <span className="text-destructive line-through">
-                      {edit.originalText.slice(0, 80)}
-                      {edit.originalText.length > 80 ? "..." : ""}
-                    </span>
+        {/* Applied changes list */}
+        {acceptedSuggestions.length > 0 && (
+          <div>
+            <h3 className="mb-3 font-medium">Applied Changes</h3>
+            <div className="max-h-[300px] space-y-2 overflow-auto">
+              {acceptedSuggestions.map((suggestion, idx) => (
+                <div
+                  key={suggestion.id}
+                  className="border-green-200 dark:border-green-800 rounded border bg-green-50/50 p-3 dark:bg-green-950/30"
+                >
+                  <div className="text-muted-foreground mb-1 flex items-center gap-2 text-xs">
+                    <HugeiconsIcon
+                      icon={Tick01Icon}
+                      strokeWidth={2}
+                      size={14}
+                      className="text-green-600"
+                    />
+                    Change #{idx + 1} · {suggestion.section}
                   </div>
-                  <div className="flex gap-2">
-                    <span className="text-muted-foreground shrink-0">To:</span>
-                    <span className="text-green-600 dark:text-green-400">
-                      {edit.newText.slice(0, 80)}
-                      {edit.newText.length > 80 ? "..." : ""}
-                    </span>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex gap-2">
+                      <span className="text-muted-foreground shrink-0">From:</span>
+                      <span className="text-destructive line-through">
+                        {suggestion.originalSnippet.slice(0, 80)}
+                        {suggestion.originalSnippet.length > 80 ? "..." : ""}
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <span className="text-muted-foreground shrink-0">To:</span>
+                      <span className="text-green-600 dark:text-green-400">
+                        {suggestion.proposedText.slice(0, 80)}
+                        {suggestion.proposedText.length > 80 ? "..." : ""}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Error */}
         {error && (
@@ -192,7 +232,7 @@ export function ExportPanel({
               ) : (
                 <>
                   <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />
-                  Generate Edited PDF
+                  Generate PDF
                 </>
               )}
             </Button>
@@ -221,7 +261,7 @@ export function ExportPanel({
                   Download PDF
                 </Button>
                 <Button
-                  onClick={handleDownloadChangeSet}
+                  onClick={handleDownloadChangeLog}
                   variant="outline"
                   size="lg"
                 >
@@ -235,7 +275,7 @@ export function ExportPanel({
           <div className="flex gap-2">
             <Button variant="ghost" onClick={onBack}>
               <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
-              Back to Review
+              Back to Editing
             </Button>
             <Button variant="ghost" onClick={onStartOver}>
               Start Over
@@ -246,4 +286,3 @@ export function ExportPanel({
     </Card>
   );
 }
-

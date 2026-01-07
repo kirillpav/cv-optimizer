@@ -254,17 +254,37 @@ IMPORTANT: Always return multiple suggestions (5-10) in the suggestions array, n
 
     console.log("Parsed suggestions count:", suggestionsArray.length);
 
-    // Validate and add status to each suggestion
-    const result = suggestionsArray.map((s: Omit<Suggestion, "status">, idx: number) => ({
-      id: s.id || `suggestion-${idx + 1}`,
-      section: s.section || "other",
-      originalSnippet: s.originalSnippet || "",
-      proposedText: s.proposedText || "",
-      reason: s.reason || "",
-      riskLevel: s.riskLevel || "medium",
-      status: "pending" as const,
-    }));
-    
+    // Validate and add status and text context to each suggestion
+    const result = suggestionsArray.map((s: Omit<Suggestion, "status">, idx: number) => {
+      const originalSnippet = s.originalSnippet || "";
+
+      // Find text context (50 chars before/after) for better matching
+      let textContext: { before: string; after: string } | undefined;
+      if (originalSnippet && resumeText) {
+        const snippetIndex = resumeText.indexOf(originalSnippet);
+        if (snippetIndex !== -1) {
+          const beforeStart = Math.max(0, snippetIndex - 50);
+          const afterEnd = Math.min(resumeText.length, snippetIndex + originalSnippet.length + 50);
+          textContext = {
+            before: resumeText.slice(beforeStart, snippetIndex),
+            after: resumeText.slice(snippetIndex + originalSnippet.length, afterEnd),
+          };
+        }
+      }
+
+      return {
+        id: s.id || `suggestion-${idx + 1}`,
+        section: s.section || "other",
+        originalSnippet,
+        proposedText: s.proposedText || "",
+        reason: s.reason || "",
+        riskLevel: s.riskLevel || "medium",
+        status: "pending" as const,
+        textContext,
+        confidence: textContext ? 1.0 : 0.5, // Higher confidence if we found the text
+      };
+    });
+
     console.log("Returning", result.length, "suggestions");
     return result;
   } catch (parseError) {

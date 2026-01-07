@@ -16,14 +16,16 @@ import {
   Cancel01Icon,
   ArrowRight01Icon,
   SparklesIcon,
+  ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { InlineDiffPreview } from "./InlineDiffSuggestion";
 import type { Suggestion, SuggestionStatus } from "@/lib/types";
 
 interface SuggestionsPanelProps {
   suggestions: Suggestion[];
   onUpdateStatus: (id: string, status: SuggestionStatus) => void;
-  onSelectForMapping: (suggestion: Suggestion) => void;
-  activeMappingId: string | null;
+  onApplySuggestion: (id: string) => void;
+  onScrollToSuggestion: (id: string) => void;
 }
 
 const riskColors: Record<string, string> = {
@@ -35,21 +37,18 @@ const riskColors: Record<string, string> = {
 
 const statusColors: Record<SuggestionStatus, string> = {
   pending: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
-  accepted: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  accepted: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
   rejected: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-  mapped: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
 };
 
 export function SuggestionsPanel({
   suggestions,
   onUpdateStatus,
-  onSelectForMapping,
-  activeMappingId,
+  onApplySuggestion,
+  onScrollToSuggestion,
 }: SuggestionsPanelProps) {
-  const acceptedCount = suggestions.filter(
-    (s) => s.status === "accepted" || s.status === "mapped"
-  ).length;
-  const mappedCount = suggestions.filter((s) => s.status === "mapped").length;
+  const acceptedCount = suggestions.filter((s) => s.status === "accepted").length;
+  const pendingCount = suggestions.filter((s) => s.status === "pending").length;
 
   return (
     <Card className="w-full">
@@ -59,10 +58,9 @@ export function SuggestionsPanel({
           AI Suggestions
         </CardTitle>
         <CardDescription>
-          Review each suggestion. Accept the ones you want to apply, then map
-          them to specific locations in your PDF.
+          Review each suggestion and apply the ones you want to include in your CV.
           <span className="mt-1 block text-xs">
-            {acceptedCount} accepted · {mappedCount} mapped to PDF
+            {pendingCount} pending · {acceptedCount} applied
           </span>
         </CardDescription>
       </CardHeader>
@@ -85,8 +83,8 @@ export function SuggestionsPanel({
                 key={suggestion.id}
                 suggestion={suggestion}
                 onUpdateStatus={onUpdateStatus}
-                onSelectForMapping={onSelectForMapping}
-                isActiveMapping={activeMappingId === suggestion.id}
+                onApplySuggestion={onApplySuggestion}
+                onScrollToSuggestion={onScrollToSuggestion}
               />
             ))}
           </div>
@@ -99,27 +97,34 @@ export function SuggestionsPanel({
 interface SuggestionCardProps {
   suggestion: Suggestion;
   onUpdateStatus: (id: string, status: SuggestionStatus) => void;
-  onSelectForMapping: (suggestion: Suggestion) => void;
-  isActiveMapping: boolean;
+  onApplySuggestion: (id: string) => void;
+  onScrollToSuggestion: (id: string) => void;
 }
 
 function SuggestionCard({
   suggestion,
   onUpdateStatus,
-  onSelectForMapping,
-  isActiveMapping,
+  onApplySuggestion,
+  onScrollToSuggestion,
 }: SuggestionCardProps) {
-  const { id, section, originalSnippet, proposedText, reason, riskLevel, status } =
-    suggestion;
+  const {
+    id,
+    section,
+    originalSnippet,
+    proposedText,
+    reason,
+    riskLevel,
+    status,
+  } = suggestion;
 
   return (
     <div
       className={`rounded-lg border p-4 transition-all ${
-        isActiveMapping
-          ? "border-primary ring-primary/20 ring-2"
+        status === "accepted"
+          ? "border-green-300 bg-green-50/50 dark:border-green-800 dark:bg-green-950/30"
           : status === "rejected"
-            ? "border-muted bg-muted/30 opacity-60"
-            : "border-border"
+          ? "border-muted bg-muted/30 opacity-60"
+          : "border-border"
       }`}
     >
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -133,26 +138,11 @@ function SuggestionCard({
       <div className="mb-3 space-y-2">
         <div>
           <span className="text-muted-foreground mb-1 block text-xs font-medium uppercase tracking-wide">
-            Original
+            Change Preview
           </span>
-          <p className="bg-destructive/10 text-destructive rounded px-2 py-1 text-sm line-through">
-            {originalSnippet}
-          </p>
-        </div>
-        <div className="flex items-center justify-center">
-          <HugeiconsIcon
-            icon={ArrowRight01Icon}
-            strokeWidth={2}
-            className="text-muted-foreground rotate-90"
-          />
-        </div>
-        <div>
-          <span className="text-muted-foreground mb-1 block text-xs font-medium uppercase tracking-wide">
-            Suggested
-          </span>
-          <p className="rounded bg-green-100 px-2 py-1 text-sm text-green-900 dark:bg-green-900/30 dark:text-green-200">
-            {proposedText}
-          </p>
+          <div className="rounded bg-gray-50 px-2 py-1 dark:bg-gray-900/50">
+            <InlineDiffPreview original={originalSnippet} proposed={proposedText} />
+          </div>
         </div>
       </div>
 
@@ -163,30 +153,19 @@ function SuggestionCard({
           <>
             <Button
               size="sm"
-              onClick={() => onUpdateStatus(id, "accepted")}
+              onClick={() => onApplySuggestion(id)}
               variant="default"
             >
               <HugeiconsIcon icon={Tick01Icon} strokeWidth={2} />
-              Accept
+              Apply
             </Button>
             <Button
               size="sm"
               variant="outline"
-              onClick={() => onUpdateStatus(id, "rejected")}
+              onClick={() => onScrollToSuggestion(id)}
             >
-              <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
-              Reject
-            </Button>
-          </>
-        )}
-        {status === "accepted" && (
-          <>
-            <Button
-              size="sm"
-              onClick={() => onSelectForMapping(suggestion)}
-              variant={isActiveMapping ? "secondary" : "default"}
-            >
-              {isActiveMapping ? "Mapping..." : "Map to PDF"}
+              <HugeiconsIcon icon={ViewIcon} strokeWidth={2} />
+              View in CV
             </Button>
             <Button
               size="sm"
@@ -198,14 +177,11 @@ function SuggestionCard({
             </Button>
           </>
         )}
-        {status === "mapped" && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => onSelectForMapping(suggestion)}
-          >
-            Re-map location
-          </Button>
+        {status === "accepted" && (
+          <div className="text-muted-foreground flex items-center gap-2 text-sm">
+            <HugeiconsIcon icon={Tick01Icon} strokeWidth={2} className="text-green-600" />
+            Applied to CV
+          </div>
         )}
         {status === "rejected" && (
           <Button
@@ -220,4 +196,3 @@ function SuggestionCard({
     </div>
   );
 }
-
